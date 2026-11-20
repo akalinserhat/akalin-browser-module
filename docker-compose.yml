@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  virtual-browser:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: akalin-virtual-browser
+    restart: unless-stopped
+    shm_size: "2gb" # Headless Chromium çökmesini engelleyen kritik bellek alanı
+    ports:
+      - "8002:8002"
+    environment:
+      - PROXY_SERVICE_URL=http://host.docker.internal:8001
+      - BROWSER_POSTGRES_HOST=host.docker.internal
+      - BROWSER_POSTGRES_PORT=5432
+      - BROWSER_POSTGRES_USER=gateway
+      - BROWSER_POSTGRES_PASSWORD=gateway_secret_password
+      - BROWSER_POSTGRES_DB=akalin_browser_db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

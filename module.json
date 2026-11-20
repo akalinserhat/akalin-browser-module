@@ -1,0 +1,22 @@
+{
+  "kod": "MOD_BROWSER",
+  "ad": "Sanal Tarayıcı & Web Otomasyonu",
+  "aciklama": "AI Ajanları için Playwright & HTTP hibrit sanal tarayıcı, oturum havuzu ve web otomasyon modülü.",
+  "versiyon": "1.0.0",
+  "ikon": "Globe",
+  "kapsam": "Admin",
+  "isCore": true,
+  "tanitim": {
+    "baslik": "Akalin Hibrit Sanal Tarayıcı",
+    "ozet": "Başsız Chromium ve hafif HTTP motoru ile donatılmış, Docker tabanlı AI tarayıcı modülü.",
+    "detayliAciklama": "Yapay zeka ajanlarının web sayfalarında gezinmesini, DOM snapshot'ları çıkarmasını, butonlara tıklamasını ve formları doldurmasını sağlar. Proxy servisi ile entegre IP rotasyonu sunar.",
+    "rozet": "Playwright + Docker",
+    "butonMetni": "Modülü Yapılandır",
+    "avantajlar": [
+      "Hızlı HTTP Scraper ile sıfır bellek tüketimli statik okuma",
+      "Docker üzerinde çalışan 2GB SHM izole başsız Chromium motoru",
+      "akalin-proxy-service üzerinden dinamik round-robin IP rotasyonu",
+      "Ajanlar için ref tabanlı sadeleştirilmiş DOM etkileşimi"
+    ]
+  }
+}
