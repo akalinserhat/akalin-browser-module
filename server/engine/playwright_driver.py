@@ -163,7 +163,8 @@ class PlaywrightDriver:
         # Numaralı etkileşimli öğeler özeti
         elements_summary = []
         for el in elements[:100]:
-            elements_summary.append(f"[{el['ref']}] {el['tag']}{f'[{el.get(\"type\")}]' if el.get('type') else ''} \"{el['text']}\"")
+            type_str = f"[{el.get('type')}]" if el.get("type") else ""
+            elements_summary.append(f"[{el['ref']}] {el['tag']}{type_str} \"{el['text']}\"")
 
         combined = "ETKİLEŞİMLİ ÖĞELER:\n" + "\n".join(elements_summary) + "\n\nSAYFA METNİ:\n" + page_text
 
