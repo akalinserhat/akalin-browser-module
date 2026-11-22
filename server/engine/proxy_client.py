@@ -9,7 +9,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("browser_proxy_client")
 
@@ -64,6 +64,44 @@ class ProxyServiceClient:
                 pass
         except Exception as exc:
             logger.debug(f"Proxy sonucu bildirilemedi ({proxy_id}): {exc}")
+
+    def report_failure(
+        self,
+        proxy_id: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        error_reason: str = "",
+        target_url: Optional[str] = None,
+        exclude_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Proxy bağlantı hatasını akalin-proxy-service'in özel ProxyIncidentRoutine uç noktasına
+        (`/api/proxies/report-failure`) bildirir. Servis IP'yi anında test edip ölmüşse siler,
+        havuzu tamamlar ve temiz bir `replacement_proxy` döner.
+        """
+        if not proxy_id and not endpoint:
+            return {}
+        url = f"{self.base_url}/api/proxies/report-failure"
+        payload = json.dumps({
+            "proxy_id": proxy_id,
+            "endpoint": endpoint,
+            "error_reason": error_reason,
+            "target_url": target_url,
+            "exclude_ids": exclude_ids or [],
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "AkalinBrowserModule/1.0"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.warning(f"Proxy arıza bildirimi iletilemedi ({proxy_id or endpoint}): {exc}")
+            return {}
 
 
 proxy_client = ProxyServiceClient()

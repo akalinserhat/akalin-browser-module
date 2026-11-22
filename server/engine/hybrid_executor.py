@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from database.browser_postgres_db import browser_db
 from engine.http_fetcher import http_fetcher
@@ -32,6 +32,8 @@ class HybridBrowserExecutor:
         text: Optional[str] = None,
         direction: Optional[str] = "down",
         use_proxy: bool = False,
+        proxy_override: Optional[Dict[str, Any]] = None,
+        exclude_proxy_ids: Optional[List[str]] = None,
         force_chromium: bool = False,
         allow_private_networks: bool = False,
     ) -> Dict[str, Any]:
@@ -40,7 +42,10 @@ class HybridBrowserExecutor:
         proxy_endpoint = None
 
         if use_proxy:
-            proxy_node = proxy_client.get_rotating_proxy()
+            if proxy_override and proxy_override.get("endpoint"):
+                proxy_node = proxy_override
+            else:
+                proxy_node = proxy_client.get_rotating_proxy()
             if proxy_node:
                 proxy_endpoint = f"{proxy_node.get('protocol', 'http')}://{proxy_node.get('endpoint')}"
 
@@ -271,6 +276,121 @@ class HybridBrowserExecutor:
                 "snapshot_text": pw_res["snapshot_text"],
                 "interactive_elements": pw_res["interactive_elements"],
             }
+
+        elif action == "inspect_apis":
+            target_url = url or "https://gemini.google.com/app"
+            try:
+                await playwright_driver.get_or_create_page(conversation_id, proxy_url=proxy_endpoint)
+                pw_page = playwright_driver._sessions[conversation_id].page
+                if not pw_page.url or pw_page.url == "about:blank" or not pw_page.url.startswith("http"):
+                    await pw_page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+                    try:
+                        await pw_page.wait_for_load_state("networkidle", timeout=4000)
+                    except Exception:
+                        pass
+
+                inspection = await playwright_driver.inspect_page_apis_and_controls(conversation_id)
+                sess = browser_db.upsert_session(
+                    conversation_id=conversation_id,
+                    current_url=inspection.get("url", target_url),
+                    current_title=inspection.get("title", ""),
+                    mode="chromium",
+                    status="idle",
+                    app_id=app_id,
+                    agent_id=agent_id,
+                    proxy_endpoint=proxy_endpoint or "",
+                )
+                return {
+                    "session_id": sess["id"],
+                    "conversation_id": conversation_id,
+                    "mode": "chromium",
+                    "inspection": inspection,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+            except Exception as exc:
+                return {"error": f"API inceleme hatası: {exc}"}
+
+        elif action == "prompt_llm":
+            if not text:
+                return {"error": "prompt_llm eylemi için 'text' (istem) parametresi zorunludur."}
+            target_url = url or "https://gemini.google.com/app"
+            try:
+                pw_res = await playwright_driver.execute_prompt_and_capture_response(
+                    conversation_id=conversation_id,
+                    prompt_text=text,
+                    target_url=target_url,
+                    proxy_url=proxy_endpoint,
+                )
+                if pw_res.get("error"):
+                    err_str = str(pw_res.get("error"))
+                    incident_res: Dict[str, Any] = {}
+                    if proxy_node:
+                        await playwright_driver.close_session(conversation_id)
+                        incident_res = await asyncio.to_thread(
+                            proxy_client.report_failure,
+                            proxy_id=proxy_node.get("id"),
+                            endpoint=proxy_node.get("endpoint"),
+                            error_reason=err_str,
+                            target_url=target_url,
+                            exclude_ids=exclude_proxy_ids,
+                        )
+                    return {
+                        "error": err_str,
+                        "retryable_proxy_error": bool(use_proxy and not pw_res.get("requires_auth")),
+                        "proxy_id": proxy_node.get("id") if proxy_node else None,
+                        "proxy_endpoint": proxy_node.get("endpoint") if proxy_node else None,
+                        "proxy_incident": incident_res,
+                        "replacement_proxy": incident_res.get("replacement_proxy"),
+                        **{k: v for k, v in pw_res.items() if k not in ("error", "success")},
+                    }
+
+                if proxy_node and proxy_node.get("id"):
+                    await asyncio.to_thread(
+                        proxy_client.report_outcome,
+                        proxy_node["id"],
+                        True,
+                        int((time.time() - start_time) * 1000),
+                    )
+                sess = browser_db.upsert_session(
+                    conversation_id=conversation_id,
+                    current_url=pw_res.get("url", target_url),
+                    current_title=pw_res.get("title", ""),
+                    mode="chromium",
+                    status="busy",
+                    app_id=app_id,
+                    agent_id=agent_id,
+                    proxy_endpoint=proxy_endpoint or "",
+                )
+                return {
+                    "session_id": sess["id"],
+                    "conversation_id": conversation_id,
+                    "mode": "chromium",
+                    "proxy_id": proxy_node.get("id") if proxy_node else None,
+                    "proxy_endpoint": proxy_node.get("endpoint") if proxy_node else None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    **pw_res,
+                }
+            except Exception as exc:
+                err_str = str(exc)
+                incident_res = {}
+                await playwright_driver.close_session(conversation_id)
+                if proxy_node:
+                    incident_res = await asyncio.to_thread(
+                        proxy_client.report_failure,
+                        proxy_id=proxy_node.get("id"),
+                        endpoint=proxy_node.get("endpoint"),
+                        error_reason=err_str,
+                        target_url=target_url,
+                        exclude_ids=exclude_proxy_ids,
+                    )
+                return {
+                    "error": f"Sanal tarayıcı LLM yürütme hatası ({target_url}): {err_str}",
+                    "retryable_proxy_error": bool(use_proxy),
+                    "proxy_id": proxy_node.get("id") if proxy_node else None,
+                    "proxy_endpoint": proxy_node.get("endpoint") if proxy_node else None,
+                    "proxy_incident": incident_res,
+                    "replacement_proxy": incident_res.get("replacement_proxy"),
+                }
 
         elif action == "close":
             await playwright_driver.close_session(conversation_id)

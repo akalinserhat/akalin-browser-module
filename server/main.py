@@ -39,7 +39,7 @@ app.add_middleware(
 
 
 class ExecuteActionRequest(BaseModel):
-    action: str = Field(..., description="navigate, snapshot, click, type, scroll, back, close")
+    action: str = Field(..., description="navigate, snapshot, click, type, scroll, back, inspect_apis, prompt_llm, close")
     conversation_id: str = Field(..., description="Ajan konuşma veya oturum kimliği")
     app_id: str = Field("", description="Uygulama kimliği")
     agent_id: str = Field("", description="Ajan kodu")
@@ -48,6 +48,8 @@ class ExecuteActionRequest(BaseModel):
     text: Optional[str] = Field(None, description="Yazılacak metin")
     direction: Optional[str] = Field("down", description="Kaydırma yönü: up veya down")
     use_proxy: bool = Field(False, description="akalin-proxy-service üzerinden proxy kullanılsın mı?")
+    proxy_override: Optional[Dict[str, Any]] = Field(None, description="Belirli bir yedek proxy düğümü (id, protocol, endpoint)")
+    exclude_proxy_ids: Optional[List[str]] = Field(None, description="Önceki başarısız denemelerde kullanılan proxy ID listesi")
     force_chromium: bool = Field(False, description="Doğrudan Chromium açılsın mı?")
     allow_private_networks: bool = Field(False, description="İç ağlara izin verilsin mi?")
 
@@ -70,11 +72,13 @@ async def execute_browser_action(req: ExecuteActionRequest) -> Dict[str, Any]:
         text=req.text,
         direction=req.direction,
         use_proxy=req.use_proxy,
+        proxy_override=req.proxy_override,
+        exclude_proxy_ids=req.exclude_proxy_ids,
         force_chromium=req.force_chromium,
         allow_private_networks=req.allow_private_networks,
     )
     if "error" in result:
-        return {"success": False, "error": result["error"]}
+        return {"success": False, **result}
     return {"success": True, **result}
 
 
