@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -22,9 +23,15 @@ class ProxyServiceClient:
     def __init__(self, base_url: str = PROXY_SERVICE_URL) -> None:
         self.base_url = base_url
 
-    def get_rotating_proxy(self) -> Optional[Dict[str, Any]]:
-        """Düşük gecikmeli, aktif bir rotasyonlu proxy çeker."""
-        url = f"{self.base_url}/api/proxies/rotating?count=1"
+    def get_rotating_proxy(self, target_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Düşük gecikmeli, aktif, Chromium uyumlu (socks4 hariç) ve hedef alan adına uyumlu proxy çeker."""
+        query = "count=1&exclude_protocols=socks4"
+        if target_url:
+            parsed = urllib.parse.urlparse(target_url)
+            host = (parsed.hostname or target_url).strip().lower()
+            if host:
+                query += f"&target_host={urllib.parse.quote(host)}"
+        url = f"{self.base_url}/api/proxies/rotating?{query}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "AkalinBrowserModule/1.0"})
             with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -41,6 +48,8 @@ class ProxyServiceClient:
         success: bool,
         latency_ms: Optional[int] = None,
         cooldown_threshold: int = 3,
+        target_url: Optional[str] = None,
+        is_tunnel_latency: bool = False,
     ) -> None:
         """Proxy kullanım sonucunu akalin-proxy-service'e bildirir."""
         if not proxy_id:
@@ -51,6 +60,8 @@ class ProxyServiceClient:
             "success": success,
             "latency_ms": latency_ms,
             "cooldown_threshold": cooldown_threshold,
+            "target_url": target_url,
+            "is_tunnel_latency": is_tunnel_latency,
         }).encode("utf-8")
 
         try:
@@ -87,6 +98,7 @@ class ProxyServiceClient:
             "error_reason": error_reason,
             "target_url": target_url,
             "exclude_ids": exclude_ids or [],
+            "exclude_protocols": ["socks4"],
         }).encode("utf-8")
 
         try:

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from database.browser_postgres_db import browser_db
 from engine.http_fetcher import http_fetcher
@@ -20,6 +20,37 @@ logger = logging.getLogger("hybrid_executor")
 
 class HybridBrowserExecutor:
     """HTTP ve Chromium modları arasında akıllı hibrit yönlendirici."""
+
+    async def prewarm_target_with_proxy(
+        self,
+        target_url: str,
+        max_warm_per_url: int = 2,
+        use_proxy: bool = True,
+        max_attempts: int = 3,
+    ) -> int:
+        """Hedef LLM URL'si için çalışan bir proxy seçerek arka planda sıcak sekmeler hazırlar."""
+        added = 0
+        for _ in range(max_warm_per_url):
+            stats = playwright_driver.warm_pool_stats()
+            if stats.get(target_url, 0) >= max_warm_per_url:
+                break
+            for _attempt in range(max(1, max_attempts)):
+                p_node = None
+                p_endpoint = None
+                if use_proxy:
+                    p_node = await asyncio.to_thread(proxy_client.get_rotating_proxy, target_url)
+                    if p_node and p_node.get("endpoint"):
+                        p_endpoint = f"{p_node.get('protocol', 'http')}://{p_node.get('endpoint')}"
+                ok = await playwright_driver.prewarm_session(
+                    target_url=target_url,
+                    proxy_url=p_endpoint,
+                    max_warm_per_url=max_warm_per_url,
+                    proxy_node=p_node,
+                )
+                if ok:
+                    added += 1
+                    break
+        return added
 
     async def execute(
         self,
@@ -36,6 +67,8 @@ class HybridBrowserExecutor:
         exclude_proxy_ids: Optional[List[str]] = None,
         force_chromium: bool = False,
         allow_private_networks: bool = False,
+        on_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_status: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         start_time = time.time()
         proxy_node = None
@@ -44,9 +77,26 @@ class HybridBrowserExecutor:
         if use_proxy:
             if proxy_override and proxy_override.get("endpoint"):
                 proxy_node = proxy_override
+            elif action == "prompt_llm":
+                target_for_warm = url or "https://gemini.google.com/app"
+                # 1. Aktif oturum zaten açıksa onun proxy bilgisini koru
+                active_sess = playwright_driver._sessions.get(conversation_id)
+                if active_sess and active_sess.proxy_endpoint:
+                    proxy_endpoint = active_sess.proxy_endpoint
+                    proxy_node = active_sess.proxy_node
+                else:
+                    # 2. Hazır (warm) sekme varsa yeni rastgele proxy çekip sekmeyi çöpe atma
+                    warm_hit = await playwright_driver.peek_warm_proxy(
+                        target_for_warm,
+                        exclude_proxy_ids=exclude_proxy_ids,
+                    )
+                    if warm_hit is not None:
+                        proxy_endpoint, proxy_node = warm_hit
+                    else:
+                        proxy_node = await asyncio.to_thread(proxy_client.get_rotating_proxy, target_for_warm)
             else:
-                proxy_node = proxy_client.get_rotating_proxy()
-            if proxy_node:
+                proxy_node = await asyncio.to_thread(proxy_client.get_rotating_proxy, url)
+            if not proxy_endpoint and proxy_node and proxy_node.get("endpoint"):
                 proxy_endpoint = f"{proxy_node.get('protocol', 'http')}://{proxy_node.get('endpoint')}"
 
         if action == "navigate":
@@ -320,6 +370,8 @@ class HybridBrowserExecutor:
                     prompt_text=text,
                     target_url=target_url,
                     proxy_url=proxy_endpoint,
+                    on_delta=on_delta,
+                    on_status=on_status,
                 )
                 if pw_res.get("error"):
                     err_str = str(pw_res.get("error"))
@@ -345,11 +397,17 @@ class HybridBrowserExecutor:
                     }
 
                 if proxy_node and proxy_node.get("id"):
-                    await asyncio.to_thread(
-                        proxy_client.report_outcome,
-                        proxy_node["id"],
-                        True,
-                        int((time.time() - start_time) * 1000),
+                    # Tam LLM üretim süresini proxy ağ gecikmesi olarak yazma; arka planda domain başarısı bildir
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            proxy_client.report_outcome,
+                            proxy_node["id"],
+                            True,
+                            None,
+                            3,
+                            target_url,
+                            False,
+                        )
                     )
                 sess = browser_db.upsert_session(
                     conversation_id=conversation_id,
@@ -361,6 +419,16 @@ class HybridBrowserExecutor:
                     agent_id=agent_id,
                     proxy_endpoint=proxy_endpoint or "",
                 )
+                try:
+                    asyncio.create_task(
+                        self.prewarm_target_with_proxy(
+                            target_url=target_url,
+                            max_warm_per_url=2,
+                            use_proxy=use_proxy,
+                        )
+                    )
+                except Exception:
+                    pass
                 return {
                     "session_id": sess["id"],
                     "conversation_id": conversation_id,
